@@ -10,6 +10,10 @@ Trae 每日签到脚本（GitHub Actions 版）
 
 依赖：仅标准库，无第三方依赖。
 
+说明：
+  日志会打印签到前后的账号积分余额，用真实余额变化判断是否到账；
+  若当天已被其他设备/本机领取，claim 仍返回 code=0，此时余额变化为 0，属正常。
+
 环境变量：
   TRAE_SESSION        账号 1 的 X-Cloudide-Session Cookie（必填；后端兼容单账号部署）
   TRAE_DEVICE_ID      账号 1 的 x-device-id，16 位数字（选填，缺省随机）
@@ -81,6 +85,39 @@ def checkin(token: str, device_id: str) -> dict:
         return {"http": status, "body": {"raw": text}}
 
 
+def _auth_headers(token, device_id):
+    return {
+        "Authorization": "Cloud-IDE-JWT " + token,
+        "X-User-Region": "cn",
+        "x-device-id": device_id,
+        "Content-Type": "application/json",
+        "User-Agent": "TraeCheckin/1.0",
+    }
+
+
+def query_status(token: str, device_id: str) -> dict:
+    """查询今日签到状态（checked_in 表示今天是否已领取）。失败返回空 dict。"""
+    try:
+        status, text = _post("/trae/api/v2/ug/checkin_credits/status", _auth_headers(token, device_id), '{"Request":{}}')
+        if status != 200:
+            return {}
+        return json.loads(text)
+    except Exception:
+        return {}
+
+
+def get_balance(token: str, device_id: str):
+    """查询账号当前总积分；失败返回 None。用于计算本次签到真实到账积分。"""
+    try:
+        status, text = _post("/trae/api/v2/pay/ide_user_ent_usage", _auth_headers(token, device_id), '{"Request":{}}')
+        if status != 200:
+            return None
+        data = json.loads(text)
+        return data.get("usage_summary", {}).get("total_amount")
+    except Exception:
+        return None
+
+
 def notify_feishu(webhook, text):
     """向飞书机器人推送一条文本消息；webhook 为空则跳过。返回 HTTP 状态码，失败返回 None。"""
     if not webhook:
@@ -139,6 +176,10 @@ def main():
         try:
             token = get_token(session)
             print("[%s] 已换取新 JWT，长度=%d" % (name, len(token)))
+            before = query_status(token, device_id)
+            bal_before = get_balance(token, device_id)
+            print("[%s] 签到前：今日已签到=%s 积分余额=%s" % (
+                name, before.get("checked_in"), "-" if bal_before is None else bal_before))
             result = checkin(token, device_id)
             body = result["body"]
             code = body.get("code", -1)
@@ -152,11 +193,26 @@ def main():
                 result = checkin(token, device_id)
                 body = result["body"]
                 code = body.get("code", -1)
-            checked = body.get("checked_in", False)
-            ok = (result["http"] == 200) and (code == 0 or checked)
-            credits = body.get("credits", 0)
+            after = query_status(token, device_id)
+            bal_after = get_balance(token, device_id)
+            checked = after.get("checked_in")
+            if checked is None:
+                checked = body.get("checked_in", False)
+            ok = (result["http"] == 200) and (code == 0 or checked) and (checked is not False)
+            if bal_before is not None and bal_after is not None:
+                delta = bal_after - bal_before
+            else:
+                delta = None
             if ok:
-                print("[%s] 签到成功，本次获得：%s 积分" % (name, credits))
+                if delta is None:
+                    gain = "积分变化未知"
+                elif delta > 0:
+                    gain = "本次 +%s 积分" % delta
+                else:
+                    gain = "本次 +0（今天已由其他端领取过）"
+                print("[%s] 签到成功 ✓ 今日已签到=True 余额 %s → %s，%s" % (
+                    name, "-" if bal_before is None else bal_before,
+                    "-" if bal_after is None else bal_after, gain))
                 ok_names.append(name)
             else:
                 reason = body.get("message") or ("HTTP %s" % result["http"])
