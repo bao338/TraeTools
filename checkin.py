@@ -118,17 +118,70 @@ def get_balance(token: str, device_id: str):
         return None
 
 
-def notify_feishu(webhook, text):
-    """向飞书机器人推送一条文本消息；webhook 为空则跳过。返回 HTTP 状态码，失败返回 None。"""
-    if not webhook:
-        return None
-    try:
-        payload = json.dumps({"msg_type": "text", "content": {"text": text}}).encode("utf-8")
-        req = urllib.request.Request(webhook, data=payload, headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.status
-    except Exception:
-        return None
+def _http_post(url, data=None, headers=None, timeout=15):
+    req = urllib.request.Request(url, data=data, headers=headers or {}, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.status
+
+
+def _json_post(url, obj, timeout=15):
+    body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    return _http_post(url, body, {"Content-Type": "application/json"}, timeout)
+
+
+def notify_all(title, text):
+    """把签到结果推送到已配置的渠道，返回成功的渠道名列表。
+
+    在仓库 Secrets 里配置下列任意一个（可同时配多个，全部都会收到）：
+      FEISHU_WEBHOOK    飞书群自定义机器人 webhook
+      WECOM_WEBHOOK     企业微信群机器人 webhook
+      DINGTALK_WEBHOOK  钉钉群自定义机器人 webhook
+      PUSHPLUS_TOKEN    pushplus.plus 的 token（微信收消息）
+      SERVERCHAN_KEY    Server酱 SendKey（微信收消息）
+      NTFY_TOPIC        ntfy.sh 主题名（手机装 ntfy App 订阅，免注册）
+    """
+    sent = []
+
+    def run(label, fn):
+        try:
+            fn()
+            sent.append(label)
+        except Exception as e:
+            print("[推送] %s 失败: %s" % (label, e))
+
+    wh = os.environ.get("FEISHU_WEBHOOK", "").strip()
+    if wh:
+        run("飞书", lambda: _json_post(wh, {"msg_type": "text", "content": {"text": title + "\n" + text}}))
+
+    wh = os.environ.get("WECOM_WEBHOOK", "").strip()
+    if wh:
+        run("企业微信", lambda: _json_post(wh, {"msgtype": "text", "text": {"content": title + "\n" + text}}))
+
+    wh = os.environ.get("DINGTALK_WEBHOOK", "").strip()
+    if wh:
+        run("钉钉", lambda: _json_post(wh, {"msgtype": "text", "text": {"content": title + "\n" + text}}))
+
+    token = os.environ.get("PUSHPLUS_TOKEN", "").strip()
+    if token:
+        run("PushPlus", lambda: _json_post("https://www.pushplus.plus/send", {
+            "token": token, "title": title,
+            "content": text.replace("\n", "<br>"), "template": "html"}))
+
+    key = os.environ.get("SERVERCHAN_KEY", "").strip()
+    if key:
+        def _sc():
+            import urllib.parse
+            body = urllib.parse.urlencode({"title": title, "desp": text}).encode("utf-8")
+            _http_post("https://sctapi.ftqq.com/%s.send" % key, body,
+                       {"Content-Type": "application/x-www-form-urlencoded"})
+        run("Server酱", _sc)
+
+    topic = os.environ.get("NTFY_TOPIC", "").strip()
+    if topic:
+        run("ntfy", lambda: _http_post("https://ntfy.sh/" + topic, text.encode("utf-8"),
+                                       {"Title": "Trae Checkin", "Tags": "white_check_mark"}))
+
+    return sent
 
 
 def beijing_now_str():
@@ -162,8 +215,7 @@ def main():
         print("错误：缺少环境变量 TRAE_SESSION")
         sys.exit(1)
 
-    webhook = os.environ.get("FEISHU_WEBHOOK", "").strip()
-    ok_names, fail_names = [], []
+    ok_names, fail_names, detail = [], [], []
     all_ok = True
 
     for index, session, device_id in accounts:
@@ -210,28 +262,34 @@ def main():
                     gain = "本次 +%s 积分" % delta
                 else:
                     gain = "本次 +0（今天已由其他端领取过）"
-                print("[%s] 签到成功 ✓ 今日已签到=True 余额 %s → %s，%s" % (
+                line = "[%s] ✓ 余额 %s → %s，%s" % (
                     name, "-" if bal_before is None else bal_before,
-                    "-" if bal_after is None else bal_after, gain))
+                    "-" if bal_after is None else bal_after, gain)
+                print(line)
+                detail.append(line)
                 ok_names.append(name)
             else:
                 reason = body.get("message") or ("HTTP %s" % result["http"])
-                print("[%s] 签到失败：%s" % (name, reason))
+                line = "[%s] ✗ 失败：%s" % (name, reason)
+                print(line)
+                detail.append(line)
                 fail_names.append(name)
                 all_ok = False
         except Exception as e:
             print("[%s] 签到异常: %s" % (name, e))
+            detail.append("[%s] ✗ 异常：%s" % (name, e))
             fail_names.append(name)
             all_ok = False
 
-    # 汇总一条飞书推送（无论成功/失败都汇总，webhook 为空则跳过）
-    summary = ["Trae 多账号签到结果", "时间：%s" % beijing_now_str()]
-    if ok_names:
-        summary.append("成功：" + "、".join(ok_names))
-    if fail_names:
-        summary.append("失败：" + "、".join(fail_names))
-    if webhook and (ok_names or fail_names):
-        notify_feishu(webhook, "\n".join(summary))
+    # 汇总并推送（配置了任一渠道才会真的发出去）
+    title = "Trae 签到 %s" % beijing_now_str()
+    lines = ["结果：%s" % ("全部成功" if all_ok else "有失败")]
+    lines += detail
+    sent = notify_all(title, "\n".join(lines))
+    if sent:
+        print("已推送：%s" % "、".join(sent))
+    else:
+        print("未推送：未配置推送渠道（或推送失败），见 Secrets 里的 FEISHU_WEBHOOK / WECOM_WEBHOOK 等")
 
     if not all_ok:
         sys.exit(1)
