@@ -32,4 +32,9 @@ jobs:
           TRAE_SESSION_4: ${{ secrets.TRAE_SESSION_4 }}
           TRAE_DEVICE_ID_4: ${{ secrets.TRAE_DEVICE_ID_4 }}
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
+          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
         run: python checkin.py
