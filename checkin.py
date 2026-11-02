@@ -319,14 +319,23 @@ def main():
             all_ok = False
 
     # 汇总并推送（配置了任一渠道才会真的发出去）
-    title = "Trae 签到 %s" % beijing_now_str()
-    lines = ["结果：%s" % ("全部成功" if all_ok else "有失败")]
-    lines += detail
-    sent = notify_all(title, "\n".join(lines))
-    if sent:
-        print("已推送：%s" % "、".join(sent))
+    # TRAE_NOTIFY: always = 每轮都推（主轮）/ fail = 仅本轮有失败才推（兜底轮）/ never = 不推
+    mode = os.environ.get("TRAE_NOTIFY", "always").strip().lower()
+    if mode not in ("always", "fail", "never"):
+        mode = "always"
+    need_push = (mode == "always") or (mode == "fail" and not all_ok)
+    if not need_push:
+        print("本轮按策略不推送（TRAE_NOTIFY=%s，全部成功，只报状态）" % mode)
+        print("结果：全部成功")
     else:
-        print("未推送：未配置推送渠道（或推送失败），见 Secrets 里的 FEISHU_WEBHOOK / WECOM_WEBHOOK 等")
+        title = "Trae 签到 %s" % beijing_now_str()
+        lines = ["结果：%s" % ("全部成功" if all_ok else "有失败")]
+        lines += detail
+        sent = notify_all(title, "\n".join(lines))
+        if sent:
+            print("已推送：%s" % "、".join(sent))
+        else:
+            print("未推送：未配置推送渠道（或推送失败），见 Secrets 里的 FEISHU_WEBHOOK / WECOM_WEBHOOK 等")
 
     if not all_ok:
         sys.exit(1)
