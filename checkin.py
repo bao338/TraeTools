@@ -246,6 +246,18 @@ def random_device_id():
     return str(random.randint(10**15, 10**16 - 1))
 
 
+def fmt_num(v):
+    """积分显示：整数去掉小数点，非整数最多 2 位小数。"""
+    if v is None:
+        return "未知"
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    r = round(f, 2)
+    return str(int(r)) if r == int(r) else ("%.2f" % r).rstrip("0").rstrip(".")
+
+
 def main():
     accounts = list(iter_sessions())
     if not accounts:
@@ -253,7 +265,7 @@ def main():
         sys.exit(1)
 
     ok_names, fail_names, detail = [], [], []
-    status = []  # [(账号序号, 是否成功)] —— 用于生成「✅①❌②」式标题
+    rows = []  # 每账号一条：序号 / 成败 / 总积分 / 变化 / 原因，用于生成标题和正文
     all_ok = True
 
     for index, session, device_id in accounts:
@@ -306,20 +318,23 @@ def main():
                 print(line)
                 detail.append(line)
                 ok_names.append(name)
-                status.append((index, True))
+                rows.append({"idx": index, "ok": True, "before": bal_before,
+                             "total": bal_after, "note": gain})
             else:
                 reason = body.get("message") or ("HTTP %s" % result["http"])
                 line = "[%s] ✗ 失败：%s" % (name, reason)
                 print(line)
                 detail.append(line)
                 fail_names.append(name)
-                status.append((index, False))
+                rows.append({"idx": index, "ok": False, "before": bal_before,
+                             "total": bal_after, "note": reason})
                 all_ok = False
         except Exception as e:
             print("[%s] 签到异常: %s" % (name, e))
             detail.append("[%s] ✗ 异常：%s" % (name, e))
             fail_names.append(name)
-            status.append((index, False))
+            rows.append({"idx": index, "ok": False, "before": None,
+                         "total": None, "note": str(e)})
             all_ok = False
 
     # 汇总并推送（配置了任一渠道才会真的发出去）
@@ -333,12 +348,49 @@ def main():
         print("结果：全部成功")
     else:
         marks = "".join(
-            ("✅" if ok else "❌") + (chr(0x2460 + i - 1) if 1 <= i <= 20 else str(i))
-            for i, ok in status)
+            ("✅" if r["ok"] else "❌") + (chr(0x2460 + r["idx"] - 1) if 1 <= r["idx"] <= 20 else str(r["idx"]))
+            for r in rows)
         title = "Trae %s %d/%d" % (marks, len(ok_names), len(accounts))
-        lines = ["结果：%s" % ("全部成功" if all_ok else "有失败")]
-        lines += detail
-        sent = notify_all(title, "\n".join(lines))
+
+        body = []
+        total_sum = 0.0
+        total_known = True
+        zero_gain = 0
+        for r in rows:
+            i = r["idx"]
+            num = chr(0x2460 + i - 1) if 1 <= i <= 20 else str(i)
+            if r["ok"]:
+                body.append("%s 账号%d    ✅ 成功" % (num, i))
+                d = None
+                if r["before"] is not None and r["total"] is not None:
+                    d = r["total"] - r["before"]
+                if r["total"] is None:
+                    body.append("   总积分 未知")
+                    total_known = False
+                else:
+                    total_sum += float(r["total"])
+                    if d is None:
+                        body.append("   总积分 %s" % fmt_num(r["total"]))
+                    else:
+                        ds = ("+%s" % fmt_num(d)) if d > 0 else ("+0" if d == 0 else fmt_num(d))
+                        body.append("   总积分 %s    本次 %s" % (fmt_num(r["total"]), ds))
+                        if d == 0:
+                            zero_gain += 1
+            else:
+                body.append("%s 账号%d    ❌ 失败" % (num, i))
+                body.append("   原因 %s" % r["note"])
+            body.append("")
+
+        body.append("━" * 14)
+        head = "✅ 全部成功" if all_ok else "⚠️ 有失败"
+        body.append("%s    %d/%d 个账号" % (head, len(ok_names), len(accounts)))
+        if total_known and total_sum:
+            body.append("💰 总积分 %s" % fmt_num(total_sum))
+        if zero_gain:
+            body.append("💡 本次 +0 = 今天已在其他端领过")
+        body.append("🕐 %s" % beijing_now_str())
+
+        sent = notify_all(title, "\n".join(body))
         if sent:
             print("已推送：%s" % "、".join(sent))
         else:
