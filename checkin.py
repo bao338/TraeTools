@@ -189,10 +189,15 @@ def notify_all(title, text):
         _assert(j.get("code") == 200, j)
 
     def _serverchan(key):
+        """兼容两代 Server酱：SCT 开头走 sctapi，sctp 开头（Server酱³）走 <uid>.push.ft07.com。"""
         import urllib.parse
+        if key.startswith("sctp"):
+            uid = key[4:].split("t")[0]
+            url = "https://%s.push.ft07.com/send/%s.send" % (uid, key)
+        else:
+            url = "https://sctapi.ftqq.com/%s.send" % key
         body = urllib.parse.urlencode({"title": title, "desp": text}).encode("utf-8")
-        j = _parse(_http_post("https://sctapi.ftqq.com/%s.send" % key, body,
-                              {"Content-Type": "application/x-www-form-urlencoded"}))
+        j = _parse(_http_post(url, body, {"Content-Type": "application/x-www-form-urlencoded"}))
         _assert(j.get("code", 0) == 0, j)
 
     def _ntfy(topic):
