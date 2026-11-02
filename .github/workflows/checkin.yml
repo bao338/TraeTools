@@ -2,11 +2,11 @@ name: Trae Daily Checkin
 
 on:
   schedule:
-    # 主轮：北京时间每天 08:00（UTC 00:00）
-    - cron: "0 0 * * *"
-    # 兜底轮：北京时间 18:00（UTC 10:00）。GitHub 定时任务常有延迟，主轮偶发失败时这一轮补签；
-    # 幂等，不重复领积分；只在有失败时才推送，所以正常情况一天仍只有 1 条消息。
-    - cron: "0 10 * * *"
+    # 主轮：北京时间 09:03（推送窗口内最早；跑完约 1 分钟 → 09:05 左右收到）
+    - cron: "3 1 * * *"
+    # 兜底轮：北京时间 18:13。主轮失败时补签；幂等，不重复领积分；
+    # 只在有失败时才推送，所以正常情况一天仍只有 1 条消息。
+    - cron: "13 10 * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -41,5 +41,5 @@ jobs:
           SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           # 主轮（08:00）与手动触发：每轮都推送；兜底轮（18:00）：仅失败时推送
-          TRAE_NOTIFY: ${{ (github.event_name == 'workflow_dispatch' || github.event.schedule == '0 0 * * *') && 'always' || 'fail' }}
+          TRAE_NOTIFY: ${{ (github.event_name == 'workflow_dispatch' || github.event.schedule == '3 1 * * *') && 'always' || 'fail' }}
         run: python checkin.py
