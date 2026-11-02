@@ -119,14 +119,35 @@ def get_balance(token: str, device_id: str):
 
 
 def _http_post(url, data=None, headers=None, timeout=15):
+    """返回 (HTTP 状态码, 响应文本)。"""
     req = urllib.request.Request(url, data=data, headers=headers or {}, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.status
+        return resp.status, resp.read().decode("utf-8", "replace")
 
 
 def _json_post(url, obj, timeout=15):
     body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
     return _http_post(url, body, {"Content-Type": "application/json"}, timeout)
+
+
+def _parse(res):
+    try:
+        return json.loads(res[1])
+    except Exception:
+        return {}
+
+
+def _assert(ok, j):
+    """多数渠道 HTTP 恒为 200，真正的成败在返回体里。
+
+    例如 PushPlus 未实名会返回 HTTP 200 + {"code":905,...}——只看 HTTP 状态会谎报「已推送」。
+    """
+    if ok:
+        return
+    msg = (j.get("msg") or j.get("message") or j.get("errmsg")
+           or j.get("info") or str(j)[:200])
+    code = j.get("code", j.get("errcode", j.get("StatusCode", "?")))
+    raise RuntimeError("%s (code=%s)" % (msg, code))
 
 
 def notify_all(title, text):
@@ -136,8 +157,8 @@ def notify_all(title, text):
       FEISHU_WEBHOOK    飞书群自定义机器人 webhook
       WECOM_WEBHOOK     企业微信群机器人 webhook
       DINGTALK_WEBHOOK  钉钉群自定义机器人 webhook
-      PUSHPLUS_TOKEN    pushplus.plus 的 token（微信收消息）
-      SERVERCHAN_KEY    Server酱 SendKey（微信收消息）
+      PUSHPLUS_TOKEN    pushplus.plus 的 token（微信收消息，需实名）
+      SERVERCHAN_KEY    Server酱 SendKey（微信收消息，免费 5 条/天）
       NTFY_TOPIC        ntfy.sh 主题名（手机装 ntfy App 订阅，免注册）
     """
     sent = []
@@ -147,39 +168,50 @@ def notify_all(title, text):
             fn()
             sent.append(label)
         except Exception as e:
-            print("[推送] %s 失败: %s" % (label, e))
+            print("[推送] %s 失败：%s" % (label, e))
 
-    wh = os.environ.get("FEISHU_WEBHOOK", "").strip()
-    if wh:
-        run("飞书", lambda: _json_post(wh, {"msg_type": "text", "content": {"text": title + "\n" + text}}))
+    def _feishu(wh):
+        j = _parse(_json_post(wh, {"msg_type": "text", "content": {"text": title + "\n" + text}}))
+        _assert(j.get("code", 0) == 0 or j.get("StatusCode", 0) == 0, j)
 
-    wh = os.environ.get("WECOM_WEBHOOK", "").strip()
-    if wh:
-        run("企业微信", lambda: _json_post(wh, {"msgtype": "text", "text": {"content": title + "\n" + text}}))
+    def _wecom(wh):
+        j = _parse(_json_post(wh, {"msgtype": "text", "text": {"content": title + "\n" + text}}))
+        _assert(j.get("errcode", 0) == 0, j)
 
-    wh = os.environ.get("DINGTALK_WEBHOOK", "").strip()
-    if wh:
-        run("钉钉", lambda: _json_post(wh, {"msgtype": "text", "text": {"content": title + "\n" + text}}))
+    def _dingtalk(wh):
+        j = _parse(_json_post(wh, {"msgtype": "text", "text": {"content": title + "\n" + text}}))
+        _assert(j.get("errcode", 0) == 0, j)
 
-    token = os.environ.get("PUSHPLUS_TOKEN", "").strip()
-    if token:
-        run("PushPlus", lambda: _json_post("https://www.pushplus.plus/send", {
+    def _pushplus(token):
+        j = _parse(_json_post("https://www.pushplus.plus/send", {
             "token": token, "title": title,
             "content": text.replace("\n", "<br>"), "template": "html"}))
+        _assert(j.get("code") == 200, j)
 
-    key = os.environ.get("SERVERCHAN_KEY", "").strip()
-    if key:
-        def _sc():
-            import urllib.parse
-            body = urllib.parse.urlencode({"title": title, "desp": text}).encode("utf-8")
-            _http_post("https://sctapi.ftqq.com/%s.send" % key, body,
-                       {"Content-Type": "application/x-www-form-urlencoded"})
-        run("Server酱", _sc)
+    def _serverchan(key):
+        import urllib.parse
+        body = urllib.parse.urlencode({"title": title, "desp": text}).encode("utf-8")
+        j = _parse(_http_post("https://sctapi.ftqq.com/%s.send" % key, body,
+                              {"Content-Type": "application/x-www-form-urlencoded"}))
+        _assert(j.get("code", 0) == 0, j)
 
-    topic = os.environ.get("NTFY_TOPIC", "").strip()
-    if topic:
-        run("ntfy", lambda: _http_post("https://ntfy.sh/" + topic, text.encode("utf-8"),
-                                       {"Title": "Trae Checkin", "Tags": "white_check_mark"}))
+    def _ntfy(topic):
+        st, _ = _http_post("https://ntfy.sh/" + topic, text.encode("utf-8"),
+                           {"Title": "Trae Checkin", "Tags": "white_check_mark"})
+        _assert(st == 200, {"code": st, "msg": "HTTP %s" % st})
+
+    if os.environ.get("FEISHU_WEBHOOK", "").strip():
+        run("飞书", lambda: _feishu(os.environ["FEISHU_WEBHOOK"].strip()))
+    if os.environ.get("WECOM_WEBHOOK", "").strip():
+        run("企业微信", lambda: _wecom(os.environ["WECOM_WEBHOOK"].strip()))
+    if os.environ.get("DINGTALK_WEBHOOK", "").strip():
+        run("钉钉", lambda: _dingtalk(os.environ["DINGTALK_WEBHOOK"].strip()))
+    if os.environ.get("PUSHPLUS_TOKEN", "").strip():
+        run("PushPlus", lambda: _pushplus(os.environ["PUSHPLUS_TOKEN"].strip()))
+    if os.environ.get("SERVERCHAN_KEY", "").strip():
+        run("Server酱", lambda: _serverchan(os.environ["SERVERCHAN_KEY"].strip()))
+    if os.environ.get("NTFY_TOPIC", "").strip():
+        run("ntfy", lambda: _ntfy(os.environ["NTFY_TOPIC"].strip()))
 
     return sent
 
