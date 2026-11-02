@@ -352,7 +352,7 @@ def main():
             for r in rows)
         title = "Trae %s %d/%d" % (marks, len(ok_names), len(accounts))
 
-        body = []
+        body = ["Trae 签到 · %s" % beijing_now_str(), "━" * 14]
         total_sum = 0.0
         total_known = True
         zero_gain = 0
@@ -382,10 +382,12 @@ def main():
             body.append("")
 
         body.append("━" * 14)
-        head = "✅ 全部成功" if all_ok else "⚠️ 有失败"
-        body.append("%s    %d/%d 个账号" % (head, len(ok_names), len(accounts)))
+        if all_ok:
+            body.append("✅ %d/%d 个账号全部成功" % (len(ok_names), len(accounts)))
+        else:
+            body.append("⚠️ 有失败    %d/%d 个账号成功" % (len(ok_names), len(accounts)))
         if total_known and total_sum:
-            body.append("💰 总积分 %s" % fmt_num(total_sum))
+            body.append("💰 两号合计 %s" % fmt_num(total_sum))
         if zero_gain:
             body.append("💡 本次 +0 = 今天已在其他端领过")
         body.append("🕐 %s" % beijing_now_str())
